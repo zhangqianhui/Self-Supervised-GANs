@@ -11,6 +11,7 @@ The tensorflow implement of [[Self-Supervised Generative Adversarial Networks]](
 ## Experiments
 
 SN_GAN: spectral norm gan
+
 SN_GAN_SS: spectral norm gan with self-supervised learning
 
 <p align="center">
