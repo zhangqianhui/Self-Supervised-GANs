@@ -11,16 +11,16 @@ def lrelu(x, alpha=0.1):
     return tf.maximum(x, alpha*x)
 
 def conv2d(input_, output_dim,
-           k_h=4, k_w=4, d_h=2, d_w=2, stddev=0.02, spectural_normed=False, iter=1,
+           kernel=4, stride=2, stddev=0.02, spectural_normed=False, iter=1,
            name="conv2d", padding='SAME', with_w=False):
     with tf.variable_scope(name):
 
-        w = tf.get_variable('w', [k_h, k_w, input_.get_shape()[-1], output_dim],
+        w = tf.get_variable('w', [kernel, kernel, input_.get_shape()[-1], output_dim],
                             initializer=tf.truncated_normal_initializer(stddev=stddev))
         if spectural_normed:
-            conv = tf.nn.conv2d(input_, spectral_norm(w, iteration=iter), strides=[1, d_h, d_w, 1], padding=padding)
+            conv = tf.nn.conv2d(input_, spectral_norm(w, iteration=iter), strides=[1, stride, stride, 1], padding=padding)
         else:
-            conv = tf.nn.conv2d(input_, w, strides=[1, d_h, d_w, 1], padding=padding)
+            conv = tf.nn.conv2d(input_, w, strides=[1, stride, stride, 1], padding=padding)
 
         biases = tf.get_variable('biases', [output_dim], initializer=tf.constant_initializer(0.0))
         conv = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape())
@@ -134,21 +134,46 @@ def batch_normal(input, reuse=False, is_training=True,  scope="scope"):
     return batch_norm(input , epsilon=1e-5, decay=0.9 , scale=True, scope=scope ,
                       is_training=is_training, reuse=reuse, fused=True, updates_collections=None)
 
-def Residual(x, output_dims=256, kernel=3, strides=1, spectural_normed=False, residual_name='resi', is_bn=True):
+def Residual_G(x, output_dims=256, kernel=3, strides=1, spectural_normed=False, up_sampling=False, residual_name='resi'):
 
     with tf.variable_scope('residual_{}'.format(residual_name)):
 
-        if is_bn:
-            conv1 = batch_normal(conv2d(x, output_dims, spectural_normed=spectural_normed, k_h=kernel, k_w=kernel, d_h=strides, d_w=strides, name="conv1"), scope='bn1')
-            conv2 = batch_normal(conv2d(tf.nn.relu(conv1), output_dims, k_h=kernel, k_w=kernel,
-                                         d_h=strides, d_w=strides, name="conv2"), scope='bn2')
-        else:
-            conv1 = conv2d(x, output_dims, k_h=kernel, spectural_normed=spectural_normed, k_w=kernel, d_h=strides, d_w=strides, name="conv1")
-            conv2 = conv2d(tf.nn.relu(conv1), output_dims, k_h=kernel, k_w=kernel,
-                                         d_h=strides, d_w=strides, name="conv2")
+        def short_cut(x):
+            x = upscale(x, 2) if up_sampling else x
+            return x
 
-        resi = x + conv2
-        return tf.nn.relu(resi)
+        x = tf.nn.relu(batch_normal(x, scope='bn1'))
+        conv1 = upscale(x, 2) if up_sampling else x
+        conv1 = conv2d(conv1, output_dim=output_dims, spectural_normed=spectural_normed,
+                                kernel=kernel, stride=strides, name="conv1")
+        conv2 = conv2d(tf.nn.relu(batch_normal(conv1, scope='bn2')), output_dim=output_dims, spectural_normed=spectural_normed,
+                       kernel=kernel, stride=strides, name="conv2")
+        resi = short_cut(x) + conv2
+        return resi
+
+def Residual_D(x, output_dims=256, kernel=3, strides=1, spectural_normed=True, down_sampling=False, residual_name='resi', is_start=False):
+
+    with tf.variable_scope('residual_{}'.format(residual_name)):
+
+        def short_cut(x):
+            x = avgpool2d(x, 2) if down_sampling else x
+            x = conv2d(x, output_dim=output_dims, spectural_normed=spectural_normed, kernel=1,
+                       stride=1, name='conv')
+            return x
+
+        if is_start:
+            conv1 = tf.nn.relu(conv2d(x, output_dim=output_dims, spectural_normed=spectural_normed, kernel=kernel,
+                           stride=strides, name="conv1"))
+            conv2 = tf.nn.relu(conv2d(conv1, output_dim=output_dims, spectural_normed=spectural_normed, kernel=kernel,
+                           stride=strides, name="conv2"))
+            conv2 = avgpool2d(conv2, 2) if down_sampling else conv2
+        else:
+            conv1 = conv2d(tf.nn.relu(x), output_dim=output_dims, spectural_normed=spectural_normed, kernel=kernel, stride=strides, name="conv1")
+            conv2 = conv2d(tf.nn.relu(conv1), output_dim=output_dims, spectural_normed=spectural_normed, kernel=kernel, stride=strides, name="conv2")
+            conv2 = avgpool2d(conv2, 2) if down_sampling else conv2
+
+        resi = short_cut(x) + conv2
+        return resi
 
 NO_OPS = 'NO_OPS'
 

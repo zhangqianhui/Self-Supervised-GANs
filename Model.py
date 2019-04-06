@@ -2,7 +2,7 @@ import os.path
 import tarfile, sys, math
 from six.moves import urllib
 import tensorflow as tf
-from ops import batch_normal, conv2d, fully_connect, lrelu, de_conv, variable_summaries, Residual, upscale, avgpool2d
+from ops import batch_normal, conv2d, fully_connect, lrelu, de_conv, variable_summaries, Residual_G, Residual_D, avgpool2d
 from utils import save_images
 import numpy as np
 import scipy
@@ -43,6 +43,7 @@ class SSGAN(object):
         self.test_z = tf.placeholder(tf.float32, [100, self.sample_size])
         self.images = tf.placeholder(tf.float32, [self.batch_size, self.output_size, self.output_size, self.channel])
         self.r_labels = tf.placeholder(tf.float32, [self.batch_size])
+        self.global_step = tf.Variable(0, trainable=False)
         self.softmax = None
         self.pool3 = None
 
@@ -54,12 +55,15 @@ class SSGAN(object):
 
         if self.ssup:
             self.images_all, self.images_all_label = self.Rotation_ALL(self.images)
+            print "self.images_all, self.images_all_label", self.images_all.shape, self.images_all_label.shape
             self.fake_images_all, _ = self.Rotation_ALL(self.fake_images)
-            _, self.D_real_pro_logits, self.D_real_rot_logits = self.discriminate(self.images_all, resnet=self.resnet, reuse=False)
+            print "self.fake_images_all", self.fake_images_all.shape
+            _, self.D_real_pro_logits, self.D_real_rot_logits, self.D_real_rot_prob = self.discriminate(self.images_all, resnet=self.resnet, reuse=False)
             self.D_real_pro_logits = self.D_real_pro_logits[:self.batch_size]
-            _, self.G_fake_pro_logits, self.G_fake_rot_logits = self.discriminate(self.fake_images_all, resnet=self.resnet, reuse=True)
+            _, self.G_fake_pro_logits, self.G_fake_rot_logits, self.G_fake_rot_prob = self.discriminate(self.fake_images_all, resnet=self.resnet, reuse=True)
             self.G_fake_pro_logits = self.G_fake_pro_logits[:self.batch_size]
-            print self.D_real_pro_logits.shape, self.G_fake_pro_logits.shape
+            print "self.D_real_pro_logits", self.D_real_pro_logits
+            print "self.G_fake_pro_logits", self.G_fake_pro_logits
 
         else:
             _, self.D_real_pro_logits = self.discriminate(self.images, resnet=self.resnet, reuse=False)
@@ -81,12 +85,10 @@ class SSGAN(object):
                 self.gradient_penalty = tf.reduce_mean((slopes - 1.) ** 2)
                 tf.summary.scalar("gp_loss", self.gradient_penalty)
                 self.D_loss += 10 * self.gradient_penalty
-
             else:
                 self.D_loss += 0.001 * tf.reduce_mean(tf.square(self.D_real_pro_logits - 0.0))
 
         elif self.loss_type == 1:
-
             self.D_fake_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
                 labels=tf.zeros_like(self.G_fake_pro_logits), logits=self.G_fake_pro_logits
             ))
@@ -108,12 +110,16 @@ class SSGAN(object):
             self.G_loss = self.loss_hinge_gen(self.G_fake_pro_logits)
 
         if self.ssup:
-            self.d_real_class_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
-                                    labels=self.images_all_label, logits=self.D_real_rot_logits))
-            self.g_fake_class_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
-                                    labels=self.images_all_label, logits=self.G_fake_rot_logits))
-            self.real_accuracy = self.Accuracy(self.D_real_rot_logits, self.images_all_label)
-            self.fake_accuracy = self.Accuracy(self.G_fake_rot_logits, self.images_all_label)
+            self.d_real_class_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
+                                    labels=tf.one_hot(self.images_all_label, self.num_rotation), logits=self.D_real_rot_logits))
+            self.g_fake_class_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
+                                    labels=tf.one_hot(self.images_all_label, self.num_rotation), logits=self.G_fake_rot_logits))
+          #   self.d_real_class_loss = - tf.reduce_mean(
+          # tf.reduce_sum(tf.one_hot(self.images_all_label, self.num_rotation) * tf.log(self.D_real_rot_prob + 1e-10), 1))
+          #   self.g_fake_class_loss = - tf.reduce_mean(
+          # tf.reduce_sum(tf.one_hot(self.images_all_label, self.num_rotation) * tf.log(self.G_fake_rot_prob + 1e-10), 1))
+            self.real_accuracy = self.Accuracy(self.D_real_rot_prob, self.images_all_label)
+            self.fake_accuracy = self.Accuracy(self.G_fake_rot_prob, self.images_all_label)
 
             self.D_loss = self.D_loss + self.weight_rotation_loss_d * self.d_real_class_loss
             self.G_loss = self.G_loss + self.weight_rotation_loss_g * self.g_fake_class_loss
@@ -224,10 +230,12 @@ class SSGAN(object):
     # do train
     def train(self):
 
+        learning_rate = tf.train.exponential_decay(self.learning_rate, self.global_step, 5000,
+                                                   0.96, staircase=True)
         if self.is_adam:
-            d_trainer = tf.train.AdamOptimizer(self.learning_rate, beta1=self.beta1, beta2=self.beta2)
+            d_trainer = tf.train.AdamOptimizer(learning_rate, beta1=self.beta1, beta2=self.beta2)
         else:
-            d_trainer = tf.train.RMSPropOptimizer(self.learning_rate)
+            d_trainer = tf.train.RMSPropOptimizer(learning_rate)
 
         d_gradients = d_trainer.compute_gradients(loss=self.D_loss, var_list=self.d_vars)
         #create summaries to visualize gradients
@@ -236,9 +244,9 @@ class SSGAN(object):
         opti_D = d_trainer.apply_gradients(d_gradients)
 
         if self.is_adam:
-            g_trainer = tf.train.AdamOptimizer(self.learning_rate, beta1=self.beta1, beta2=self.beta2)
+            g_trainer = tf.train.AdamOptimizer(learning_rate, beta1=self.beta1, beta2=self.beta2)
         else:
-            g_trainer = tf.train.RMSPropOptimizer(self.learning_rate)
+            g_trainer = tf.train.RMSPropOptimizer(learning_rate)
 
         g_gradients = g_trainer.compute_gradients(self.G_loss, var_list=self.g_vars)
         opti_G = g_trainer.apply_gradients(g_gradients)
@@ -252,6 +260,7 @@ class SSGAN(object):
 
             sess.run(init)
             step = 0
+            lr_decay = 1
             ckpt = tf.train.get_checkpoint_state(self.model_path)
             if ckpt and ckpt.model_checkpoint_path:
                 step = int(ckpt.model_checkpoint_path.split('model_', 2)[1].split('.', 2)[0])
@@ -275,23 +284,30 @@ class SSGAN(object):
 
                     z_var = np.random.normal(0, 1, size=(self.batch_size, self.sample_size))
                     r_label = np.array([np.float(np.random.randint(0, 4)) for a in range(0, self.batch_size)])
-                    sess.run(opti_D, feed_dict={self.images: train_data_list, self.z: z_var, self.r_labels: r_label})
-
+                    sess.run(opti_D, feed_dict={self.images: train_data_list, self.z: z_var, self.r_labels: r_label, self.global_step:step})
                     batch_num += 1
 
-                sess.run(opti_G, feed_dict={self.images: train_data_list, self.z: z_var, self.r_labels:r_label})
+                sess.run(opti_G, feed_dict={self.images: train_data_list, self.z: z_var, self.r_labels:r_label, self.global_step:step})
                 all_time = time.time() - start_time
 
                 if step % 50 == 0:
 
-                    d_loss, g_loss, r_labels, real_accuracy, fake_accuracy, real_class_loss, fake_class_loss = sess.run([self.D_loss, self.G_loss,
-                                                self.r_labels, self.real_accuracy, self.fake_accuracy, self.d_real_class_loss,
-                                                                                                        self.g_fake_class_loss],
+                    if self.ssup:
+                        d_loss, g_loss, r_labels, real_accuracy, fake_accuracy, real_class_loss, fake_class_loss \
+                            = sess.run([self.D_loss, self.G_loss, self.r_labels, self.real_accuracy,
+                                        self.fake_accuracy, self.d_real_class_loss, self.g_fake_class_loss],
                         feed_dict={self.images: train_data_list, self.z: z_var, self.r_labels: r_label})
-                    print("step %d D_loss=%.4f, G_loss = %.4f, all_time=%.3f, read_data_time = %.3f,"
-                          "real_accuracy=%.4f, fake_accuracy=%.4f, real_class_loss=%.4f, fake_class_loss=%.4f" % (
-                                        step, d_loss, g_loss, all_time, read_data_end_time,
-                                        real_accuracy, fake_accuracy, real_class_loss, fake_class_loss))
+                        print("step %d D_loss=%.4f, G_loss = %.4f, real_accuracy=%.4f , fake_accuracy=%.4f, real_class_loss=%.4f,"
+                              "fake_class_loss=%.4f, all_time=%.3f, read_data_time = %.3f," % (
+                                step, d_loss, g_loss, real_accuracy, fake_accuracy, real_class_loss, fake_class_loss,
+                                        all_time, read_data_end_time))
+                    else:
+                        d_loss, g_loss, r_labels = sess.run(
+                            [self.D_loss, self.G_loss, self.r_labels],
+                        feed_dict={self.images: train_data_list, self.z: z_var, self.r_labels: r_label})
+
+                        print("step %d D_loss=%.4f, G_loss = %.4f, all_time=%.3f, read_data_time = %.3f," % (
+                                        step, d_loss, g_loss, all_time, read_data_end_time))
 
                 if step % 5000 == 0:
 
@@ -300,22 +316,21 @@ class SSGAN(object):
                                     self.images_all, self.fake_images_all],
                                            feed_dict={self.images:train_data_list, self.z: z_var, self.r_labels:r_label})
                         result_concat = np.concatenate([train_data_list[0:self.batch_size],
-                                        samples[1][0+self.batch_size:self.batch_size+self.batch_size],
-                                        samples[0][0:self.batch_size], samples[2][0+self.batch_size
-                                                :self.batch_size+self.batch_size]], axis=0)
+                                        samples[1][0:self.batch_size],
+                                        samples[0][0:self.batch_size], samples[2][0+self.batch_size:self.batch_size*2],
+                                        samples[2][self.batch_size*2:self.batch_size*3]], axis=0)
                         save_images(result_concat,
                                     [result_concat.shape[0]/self.batch_size, self.batch_size],
                                     '{}/{:02d}_output.jpg'.format(self.sample_path, step))
                     else:
                         samples = sess.run(self.fake_images, feed_dict={self.images: train_data_list,
                                             self.z: z_var, self.r_labels:r_label})
-                        result_concat = np.concatenate([train_data_list[0:10],
-                                        samples[1][0:10], samples[0][0:10], samples[2][0:10]], axis=0)
+                        result_concat = np.concatenate([train_data_list[0:self.batch_size],samples[0:self.batch_size]], axis=0)
                         save_images(result_concat,
                                     [result_concat.shape[0] / self.batch_size, self.batch_size],
                                     '{}/{:02d}_output.jpg'.format(self.sample_path, step))
 
-                if np.mod(step, 10000) == 0 and step != 0:
+                if np.mod(step, 1000) == 0 and step != 0:
 
                     print("saving model")
                     self.saver.save(sess, os.path.join(self.model_path, 'model_{:06d}.ckpt'.format(step)))
@@ -403,23 +418,22 @@ class SSGAN(object):
 
             if reuse:
                 scope.reuse_variables()
-
             if resnet == False:
 
                 conv1 = lrelu(conv2d(x_var, spectural_normed=self.sn, iter=self.iter_power,
-                       output_dim=64, k_h=3, k_w=3, d_h=1, d_w=1, name='dis_conv1_1'))
-                conv1 = lrelu(conv2d(conv1, spectural_normed=self.sn, iter=self.iter_power,
-                       output_dim=64, name='dis_conv1_2'))
+                       output_dim=64, kernel=3, stride=1, name='dis_conv1_1'))
+                # conv1 = lrelu(conv2d(conv1, spectural_normed=self.sn, iter=self.iter_power,
+                #        output_dim=64, name='dis_conv1_2'))
+                # conv2 = lrelu(conv2d(conv1, spectural_normed=self.sn, iter=self.iter_power,
+                #                      output_dim=128, k_w=3, k_h=3, d_h=1, d_w=1, name='dis_conv2_1'))
                 conv2 = lrelu(conv2d(conv1, spectural_normed=self.sn, iter=self.iter_power,
-                                     output_dim=128, k_w=3, k_h=3, d_h=1, d_w=1, name='dis_conv2_1'))
-                conv2 = lrelu(conv2d(conv2, spectural_normed=self.sn, iter=self.iter_power,
                                      output_dim=128, name='dis_conv2_2'))
+                # conv3 = lrelu(conv2d(conv2, spectural_normed=self.sn, iter=self.iter_power,
+                #                      output_dim=256, k_h=3, k_w=3, d_w=1, d_h=1, name='dis_conv3_1'))
                 conv3 = lrelu(conv2d(conv2, spectural_normed=self.sn, iter=self.iter_power,
-                                     output_dim=256, k_h=3, k_w=3, d_w=1, d_h=1, name='dis_conv3_1'))
-                conv3 = lrelu(conv2d(conv3, spectural_normed=self.sn, iter=self.iter_power,
                                      output_dim=256, name='dis_conv3_2'))
                 conv4 = lrelu(conv2d(conv3, spectural_normed=self.sn, iter=self.iter_power,
-                                     output_dim=512, k_w=3, k_h=3, name='dis_conv4'))
+                                     output_dim=512, kernel=1, name='dis_conv4'))
                 conv4 = tf.reshape(conv4, [self.batch_size*self.num_rotation, -1])
                 #for D
                 gan_logits = fully_connect(conv4, spectural_normed=self.sn, iter=self.iter_power,
@@ -427,25 +441,25 @@ class SSGAN(object):
                 if self.ssup:
                     rot_logits = fully_connect(conv4, spectural_normed=self.sn, iter=self.iter_power,
                                                output_size=4, scope='dis_fully2')
+                    rot_prob = tf.nn.softmax(rot_logits)
 
             else:
 
-                conv1 = tf.nn.relu(conv2d(x_var, spectural_normed=self.sn, iter=self.iter_power,
-                       output_dim=128, d_w=1, d_h=1, name='dis_conv1'))
-                re1 = Residual(conv1, spectural_normed=self.sn, is_bn=False, output_dims=128, residual_name='re1')
-                re1 = avgpool2d(re1, k=2)
-                re2 = Residual(re1, spectural_normed=self.sn, is_bn=False, output_dims=128, residual_name='re2')
-                re2 = avgpool2d(re2, k=2)
-                re3 = Residual(re2, spectural_normed=self.sn, is_bn=False, output_dims=128, residual_name='re3')
-                re4 = Residual(re3, spectural_normed=self.sn, is_bn=False, output_dims=128, residual_name='re4')
+                re1 = Residual_D(x_var, spectural_normed=self.sn, output_dims=128, residual_name='re1', down_sampling=True, is_start=True)
+                re2 = Residual_D(re1, spectural_normed=self.sn, output_dims=128, residual_name='re2', down_sampling=True)
+                re3 = Residual_D(re2, spectural_normed=self.sn, output_dims=128, residual_name='re3')
+                re4 = Residual_D(re3, spectural_normed=self.sn, output_dims=128, residual_name='re4')
+                re4 = tf.nn.relu(re4)
                 #gsp
-                gsp = tf.reduce_mean(re4, axis=[1, 2])
+                gsp = tf.reduce_sum(re4, axis=[1, 2])
                 gan_logits = fully_connect(gsp, spectural_normed=self.sn, iter=self.iter_power, output_size=1, scope='dis_fully1')
-                rot_logits = fully_connect(gsp, spectural_normed=self.sn, iter=self.iter_power, output_size=4, scope='dis_fully2')
+                if self.ssup:
+                    rot_logits = fully_connect(gsp, spectural_normed=self.sn, iter=self.iter_power, output_size=4, scope='dis_fully2')
+                    rot_prob = tf.nn.softmax(rot_logits)
 
             #tf.summary.histogram("logits", gan_logits)
             if self.ssup:
-                return tf.nn.sigmoid(gan_logits), gan_logits, rot_logits
+                return tf.nn.sigmoid(gan_logits), gan_logits, rot_logits, rot_prob
             else:
                 return tf.nn.sigmoid(gan_logits), gan_logits
 
@@ -461,28 +475,27 @@ class SSGAN(object):
             elif self.output_size == 48:
                 s = 6
 
-            d1 = tf.nn.relu(fully_connect(z_var, output_size=s*s*256, scope='gen_fully1'))
-            d2 = tf.reshape(d1, [-1, s, s, 256])
+            d1 = fully_connect(z_var, output_size=s*s*256, scope='gen_fully1')
+            d1 = tf.reshape(d1, [-1, s, s, 256])
 
             if resnet == False:
 
-                d2 = tf.nn.relu(batch_normal(de_conv(d2, output_shape=[batch_size, s*2, s*2, 256], name='gen_deconv2')
+                d1 = tf.nn.relu(d1)
+                d2 = tf.nn.relu(batch_normal(de_conv(d1, output_shape=[batch_size, s*2, s*2, 256], name='gen_deconv2')
                                              , scope='bn1', is_training=is_train))
                 d3 = tf.nn.relu(batch_normal(de_conv(d2, output_shape=[batch_size, s*4, s*4, 128], name='gen_deconv3')
                                              , scope='bn2', is_training=is_train))
                 d4 = tf.nn.relu(batch_normal(de_conv(d3, output_shape=[batch_size, s*8, s*8, 64], name='gen_deconv4')
                                              , scope='bn3', is_training=is_train))
-                d5 = conv2d(d4, output_dim=self.channel, d_w=1, d_h=1, k_w=3, k_h=3, name='gen_conv')
+                d5 = conv2d(d4, output_dim=self.channel, stride=1, kernel=3, name='gen_conv')
 
             else:
 
-                d2 = Residual(d2, output_dims=256, residual_name='in1')
-                d2 = upscale(d2, scale=2)
-                d3 = Residual(d2, output_dims=256, residual_name='in2')
-                d3 = upscale(d3, scale=2)
-                d4 = Residual(d3, output_dims=256, residual_name='in3')
-                d4 = upscale(d4, scale=2)
-                d5 = conv2d(d4, output_dim=self.channel, d_h=1, d_w=1, name='gen_conv')
+                d2 = Residual_G(d1, output_dims=256, up_sampling=True, residual_name='in1')
+                d3 = Residual_G(d2, output_dims=256, up_sampling=True, residual_name='in2')
+                d4 = Residual_G(d3, output_dims=256, up_sampling=True, residual_name='in3')
+                d4 = tf.nn.relu(batch_normal(d4, scope='in4'))
+                d5 = conv2d(d4, output_dim=self.channel, kernel=3, stride=1, name='gen_conv')
 
             return tf.tanh(d5)
 
@@ -514,7 +527,6 @@ class SSGAN(object):
         config.allow_soft_placement = True
 
         with tf.Session(config=config, graph=tf.get_default_graph()) as sess:
-
             pool3 = sess.graph.get_tensor_by_name('pool_3:0')
             ops = pool3.graph.get_operations()
             for op_idx, op in enumerate(ops):
