@@ -11,11 +11,11 @@ The tensorflow implement of [[Self-Supervised Generative Adversarial Networks]](
 ## Experiments
 
 <p align="center">
-  <img src="/img/figure_is.png">
+  <img src="/img/fig_is.png">
 </p>
 
 <p align="center">
-  <img src="/img/figure_fid.png">
+  <img src="/img/fig_fid.png">
 </p>
 
 ## Reference code
