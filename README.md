@@ -5,5 +5,5 @@ The tensorflow implement of [[Self-Supervised Generative Adversarial Networks]](
 ## Network Architecture
 
 <p align="center">
-  <img src="/img/net.jpg">
+  <img src="/img/net.png">
 </p>
