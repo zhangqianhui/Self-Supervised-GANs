@@ -7,3 +7,21 @@ The tensorflow implement of [[Self-Supervised Generative Adversarial Networks]](
 <p align="center">
   <img src="/img/net.png">
 </p>
+
+## Experiments
+
+<p align="center">
+  <img src="/img/figure_is.png">
+</p>
+
+<p align="center">
+  <img src="/img/figure_fid.png">
+</p>
+
+## Reference code
+
+[Sparsely_Grouped_GAN](https://github.com/zhangqianhui/Sparsely_Grouped_GAN)
+
+[DCGAN tensorflow](https://github.com/carpedm20/DCGAN-tensorflow)
+
+[Spectral Norm tensorflow](https://github.com/taki0112/Spectral_Normalization-Tensorflow)
