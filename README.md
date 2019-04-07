@@ -8,7 +8,7 @@ The tensorflow implement of [[Self-Supervised Generative Adversarial Networks]](
   <img src="/img/net.png">
 </p>
 
-## Experiments(Our results)
+## Experiments(Our results on cifar10)
 
 SN_GAN: spectral norm gan
 
