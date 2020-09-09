@@ -142,48 +142,6 @@ class Cifar(object):
     def getNextBatch2(self, batch_num=0, batch_size=100):
         return self.train_data_list[(batch_num % self.ro_num) * batch_size: (batch_num % self.ro_num + 1) * batch_size]
 
-class CelebA(object):
-
-    def __init__(self, image_size):
-
-        self.dataname = "CelebA"
-        self.image_size = image_size
-        self.dims = image_size*image_size
-        self.channel = 3
-        self.shape = [image_size, image_size, self.channel]
-        self.train_data_list, self.train_lab_list = self.load_celebA()
-
-    def load_celebA(self):
-
-        # get the list of image path
-        images_list, images_label = read_image_list_file('/home/jichao/dataset/', is_test=False)
-        #images_array = self.getShapeForData(images_list)
-        return images_list, images_label
-
-    def getShapeForData(self, filenames):
-        array = [get_image(batch_file, 108, is_crop=True, resize_w=self.image_size,
-                           is_grayscale=False) for batch_file in filenames]
-
-        sample_images = np.array(array)
-        # return sub_image_mean(array , IMG_CHANNEL)
-        return sample_images
-
-    def getNextBatch(self, batch_num=0, batch_size=64):
-
-        ro_num = len(self.train_data_list) / batch_size
-        if batch_num % ro_num == 0:
-
-            length = len(self.train_data_list)
-            perm = np.arange(length)
-            np.random.shuffle(perm)
-            self.train_data_list = np.array(self.train_data_list)
-            self.train_data_list = self.train_data_list[perm]
-            self.train_lab_list = np.array(self.train_lab_list)
-            self.train_lab_list = self.train_lab_list[perm]
-
-        return self.train_data_list[(batch_num % ro_num) * batch_size: (batch_num % ro_num + 1) * batch_size], \
-               self.train_lab_list[(batch_num % ro_num) * batch_size: (batch_num % ro_num + 1) * batch_size]
-
 def get_image(image_path , image_size , is_crop=True, resize_w = 64 , is_grayscale = False):
     return transform(imread(image_path , is_grayscale), image_size, is_crop , resize_w)
 
